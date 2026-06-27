@@ -1,45 +1,56 @@
-      - name: Locate random source files
+name: Build Luminol without shared random
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global core.autocrlf false
+          git config --global core.filemode false
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '25'
+
+      - name: Show Java version
+        run: |
+          java -version
+          javac -version
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Pre-search shared random before patches
         run: |
           echo "==== pwd ===="
           pwd
 
-          echo "==== top level ===="
+          echo "==== top level files ===="
           ls -la
 
-          echo "==== find all Entity.java ===="
-          find . -name "Entity.java" -print || true
+          echo "==== files containing SHARED_RANDOM before applyAllPatches ===="
+          grep -RIn "SHARED_RANDOM" . --exclude-dir=.git --exclude-dir=.gradle || true
 
-          echo "==== find all java files containing SHARED_RANDOM ===="
-          grep -RIn --include="*.java" "SHARED_RANDOM" . || true
+          echo "==== files containing RandomSource random before applyAllPatches ===="
+          grep -RIn "RandomSource random" . --exclude-dir=.git --exclude-dir=.gradle || true
 
-          echo "==== find all files containing RandomSource random ===="
-          grep -RIn --include="*.java" "RandomSource random" . || true
-
-      - name: Patch shared random source
+      - name: Pre-patch repository patch files if possible
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
-
-          java_files = list(Path(".").rglob("*.java"))
-
-          print(f"Java files found: {len(java_files)}")
-
-          candidates = []
-          for path in java_files:
-              try:
-                  text = path.read_text(encoding="utf-8", errors="ignore")
-              except Exception:
-                  continue
-
-              if "SHARED_RANDOM" in text or "RandomSource random" in text:
-                  candidates.append(path)
-
-          print("Candidate files:")
-          for p in candidates:
-              print(" -", p)
-
-          patched_any = False
 
           patterns = [
               (
@@ -56,31 +67,154 @@
               ),
           ]
 
-          for path in candidates:
-              text = path.read_text(encoding="utf-8", errors="ignore")
-              old_text = text
+          patched = []
+
+          for path in Path(".").rglob("*"):
+              if path.is_dir():
+                  continue
+              if ".git" in path.parts or ".gradle" in path.parts:
+                  continue
+              if path.suffix not in [".java", ".patch", ".kts", ".txt"]:
+                  continue
+
+              try:
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+
+              if "SHARED_RANDOM" not in text and "RandomSource random" not in text:
+                  continue
+
+              old = text
+              for pattern, replacement in patterns:
+                  text = re.sub(pattern, replacement, text)
+
+              if text != old:
+                  path.write_text(text, encoding="utf-8")
+                  patched.append(str(path))
+
+          print("Pre-patched files:")
+          for p in patched:
+              print(" -", p)
+          PY
+
+      - name: Apply all patches
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: ./gradlew --refresh-dependencies applyAllPatches
+
+      - name: Locate random source files after patches
+        run: |
+          echo "==== find all Entity.java ===="
+          find . -name "Entity.java" -print || true
+
+          echo "==== find all files containing SHARED_RANDOM ===="
+          grep -RIn "SHARED_RANDOM" . --exclude-dir=.git || true
+
+          echo "==== find all files containing RandomSource random ===="
+          grep -RIn "RandomSource random" . --exclude-dir=.git || true
+
+      - name: Patch shared random source after patches
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          patterns = [
+              (
+                  r'((?:public|protected|private)\s+final\s+RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
+                  r'\1RandomSource.create();'
+              ),
+              (
+                  r'((?:public|protected|private)\s+RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
+                  r'\1RandomSource.create();'
+              ),
+              (
+                  r'(RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
+                  r'\1RandomSource.create();'
+              ),
+          ]
+
+          patched = []
+          related = []
+
+          for path in Path(".").rglob("*"):
+              if path.is_dir():
+                  continue
+              if ".git" in path.parts:
+                  continue
+              if path.suffix not in [".java", ".patch", ".kts", ".txt"]:
+                  continue
+
+              try:
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+              except Exception:
+                  continue
+
+              if "SHARED_RANDOM" not in text and "RandomSource random" not in text:
+                  continue
+
+              related.append(path)
+              old = text
 
               for pattern, replacement in patterns:
                   text = re.sub(pattern, replacement, text)
 
-              if text != old_text:
+              if text != old:
                   path.write_text(text, encoding="utf-8")
-                  print(f"Patched: {path}")
-                  patched_any = True
-              else:
-                  print(f"Not patched, showing related lines: {path}")
-                  for i, line in enumerate(old_text.splitlines(), start=1):
+                  patched.append(path)
+
+          print("Related files:")
+          for p in related:
+              print(" -", p)
+
+          print("Patched files:")
+          for p in patched:
+              print(" -", p)
+
+          if not patched:
+              print("No file was patched. Showing related lines:")
+              for path in related:
+                  print(f"---- {path} ----")
+                  try:
+                      text = path.read_text(encoding="utf-8", errors="ignore")
+                  except Exception:
+                      continue
+                  for i, line in enumerate(text.splitlines(), start=1):
                       if "SHARED_RANDOM" in line or "RandomSource random" in line:
                           print(f"{i}: {line}")
-
-          if not patched_any:
               raise SystemExit("Patch failed: no matching random = SHARED_RANDOM line was replaced.")
           PY
 
       - name: Verify random patch
         run: |
           echo "==== after patch: SHARED_RANDOM ===="
-          grep -RIn --include="*.java" "SHARED_RANDOM" . || true
+          grep -RIn "SHARED_RANDOM" . --exclude-dir=.git || true
 
           echo "==== after patch: RandomSource random ===="
-          grep -RIn --include="*.java" "RandomSource random" . || true
+          grep -RIn "RandomSource random" . --exclude-dir=.git || true
+
+      - name: Build paperclip jar
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: ./gradlew createPaperclipJar
+
+      - name: List build outputs
+        run: |
+          echo "==== all jar outputs ===="
+          find . -path "*/build/libs/*.jar" -type f -print || true
+
+      - name: Upload paperclip jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: luminol-no-shared-random-paperclip
+          path: |
+            **/build/libs/*paperclip*.jar
+            **/build/libs/*.jar
+          if-no-files-found: error
