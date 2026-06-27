@@ -11,6 +11,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global core.autocrlf false
+          git config --global core.filemode false
+
       - name: Set up Java 25
         uses: actions/setup-java@v4
         with:
@@ -26,6 +33,11 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Apply all patches
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: ./gradlew --refresh-dependencies applyAllPatches
 
       - name: Patch Entity random source
@@ -35,29 +47,43 @@ jobs:
           import re
 
           path = Path("luminol-server/src/main/java/net/minecraft/world/entity/Entity.java")
+
           if not path.exists():
               raise SystemExit(f"Entity.java not found: {path}")
 
           text = path.read_text(encoding="utf-8")
-
           old_text = text
 
-          # Paper/Folia/Luminol shared random:
+          # 把 Paper/Folia/Luminol 的共享实体随机源：
           # public final RandomSource random = SHARED_RANDOM;
-          # 改回每个实体独立 RandomSource。
-          text = re.sub(
-              r'((?:public|protected|private)\s+final\s+RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
-              r'\1RandomSource.create();',
-              text
-          )
+          #
+          # 改回每个实体独立随机源：
+          # public final RandomSource random = RandomSource.create();
+
+          patterns = [
+              (
+                  r'((?:public|protected|private)\s+final\s+RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
+                  r'\1RandomSource.create();'
+              ),
+              (
+                  r'((?:public|protected|private)\s+RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
+                  r'\1RandomSource.create();'
+              ),
+              (
+                  r'(RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
+                  r'\1RandomSource.create();'
+              ),
+          ]
+
+          for pattern, replacement in patterns:
+              text = re.sub(pattern, replacement, text)
 
           if text == old_text:
-              print("Did not find direct random = SHARED_RANDOM pattern.")
-              print("Searching nearby SHARED_RANDOM lines:")
+              print("Patch failed. Here are lines containing SHARED_RANDOM or RandomSource random:")
               for i, line in enumerate(old_text.splitlines(), start=1):
                   if "SHARED_RANDOM" in line or "RandomSource random" in line:
                       print(f"{i}: {line}")
-              raise SystemExit("Patch failed: random = SHARED_RANDOM was not replaced.")
+              raise SystemExit("Could not replace Entity.random = SHARED_RANDOM")
 
           path.write_text(text, encoding="utf-8")
           print("Patched Entity.random: SHARED_RANDOM -> RandomSource.create()")
@@ -65,15 +91,24 @@ jobs:
 
       - name: Verify patch
         run: |
+          echo "==== RandomSource random lines ===="
           grep -n "RandomSource random" luminol-server/src/main/java/net/minecraft/world/entity/Entity.java || true
+
+          echo "==== SHARED_RANDOM lines ===="
           grep -n "SHARED_RANDOM" luminol-server/src/main/java/net/minecraft/world/entity/Entity.java || true
 
       - name: Build paperclip jar
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: ./gradlew createPaperclipJar
 
       - name: List build outputs
         run: |
-          find luminol-server/build/libs -type f -maxdepth 1 -print
+          echo "==== luminol-server/build/libs ===="
+          find luminol-server/build/libs -maxdepth 1 -type f -print || true
 
       - name: Upload paperclip jar
         uses: actions/upload-artifact@v4
