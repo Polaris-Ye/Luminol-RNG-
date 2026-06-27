@@ -40,62 +40,76 @@ jobs:
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: ./gradlew --refresh-dependencies applyAllPatches
 
+      - name: Locate Entity.java
+        run: |
+          echo "Searching Entity.java..."
+          find . -path "*/src/main/java/net/minecraft/world/entity/Entity.java" -print
+
       - name: Patch Entity random source
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          path = Path("luminol-server/src/main/java/net/minecraft/world/entity/Entity.java")
+          candidates = list(Path(".").glob("**/src/main/java/net/minecraft/world/entity/Entity.java"))
 
-          if not path.exists():
-              raise SystemExit(f"Entity.java not found: {path}")
+          if not candidates:
+              raise SystemExit("No Entity.java found.")
 
-          text = path.read_text(encoding="utf-8")
-          old_text = text
+          print("Found Entity.java candidates:")
+          for p in candidates:
+              print(" -", p)
 
-          # 把 Paper/Folia/Luminol 的共享实体随机源：
-          # public final RandomSource random = SHARED_RANDOM;
-          #
-          # 改回每个实体独立随机源：
-          # public final RandomSource random = RandomSource.create();
+          patched_any = False
 
-          patterns = [
-              (
-                  r'((?:public|protected|private)\s+final\s+RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
-                  r'\1RandomSource.create();'
-              ),
-              (
-                  r'((?:public|protected|private)\s+RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
-                  r'\1RandomSource.create();'
-              ),
-              (
-                  r'(RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
-                  r'\1RandomSource.create();'
-              ),
-          ]
+          for path in candidates:
+              text = path.read_text(encoding="utf-8")
+              old_text = text
 
-          for pattern, replacement in patterns:
-              text = re.sub(pattern, replacement, text)
+              # 只处理包含 SHARED_RANDOM 的 Entity.java，避免误改无关文件。
+              if "SHARED_RANDOM" not in text:
+                  continue
 
-          if text == old_text:
-              print("Patch failed. Here are lines containing SHARED_RANDOM or RandomSource random:")
-              for i, line in enumerate(old_text.splitlines(), start=1):
-                  if "SHARED_RANDOM" in line or "RandomSource random" in line:
-                      print(f"{i}: {line}")
-              raise SystemExit("Could not replace Entity.random = SHARED_RANDOM")
+              patterns = [
+                  (
+                      r'((?:public|protected|private)\s+final\s+RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
+                      r'\1RandomSource.create();'
+                  ),
+                  (
+                      r'((?:public|protected|private)\s+RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
+                      r'\1RandomSource.create();'
+                  ),
+                  (
+                      r'(RandomSource\s+random\s*=\s*)SHARED_RANDOM\s*;',
+                      r'\1RandomSource.create();'
+                  ),
+              ]
 
-          path.write_text(text, encoding="utf-8")
-          print("Patched Entity.random: SHARED_RANDOM -> RandomSource.create()")
+              for pattern, replacement in patterns:
+                  text = re.sub(pattern, replacement, text)
+
+              if text != old_text:
+                  path.write_text(text, encoding="utf-8")
+                  print(f"Patched: {path}")
+                  patched_any = True
+              else:
+                  print(f"Contains SHARED_RANDOM but pattern not matched: {path}")
+                  for i, line in enumerate(old_text.splitlines(), start=1):
+                      if "SHARED_RANDOM" in line or "RandomSource random" in line:
+                          print(f"{i}: {line}")
+
+          if not patched_any:
+              raise SystemExit("Patch failed: no Entity.random = SHARED_RANDOM line was replaced.")
           PY
 
       - name: Verify patch
         run: |
-          echo "==== RandomSource random lines ===="
-          grep -n "RandomSource random" luminol-server/src/main/java/net/minecraft/world/entity/Entity.java || true
-
-          echo "==== SHARED_RANDOM lines ===="
-          grep -n "SHARED_RANDOM" luminol-server/src/main/java/net/minecraft/world/entity/Entity.java || true
+          echo "==== Entity.java random lines ===="
+          for f in $(find . -path "*/src/main/java/net/minecraft/world/entity/Entity.java"); do
+            echo "---- $f ----"
+            grep -n "RandomSource random" "$f" || true
+            grep -n "SHARED_RANDOM" "$f" || true
+          done
 
       - name: Build paperclip jar
         env:
@@ -107,14 +121,14 @@ jobs:
 
       - name: List build outputs
         run: |
-          echo "==== luminol-server/build/libs ===="
-          find luminol-server/build/libs -maxdepth 1 -type f -print || true
+          echo "==== build libs ===="
+          find . -path "*/build/libs/*.jar" -type f -print
 
       - name: Upload paperclip jar
         uses: actions/upload-artifact@v4
         with:
           name: luminol-no-shared-random-paperclip
           path: |
-            luminol-server/build/libs/*paperclip*.jar
-            luminol-server/build/libs/*.jar
+            **/build/libs/*paperclip*.jar
+            **/build/libs/*.jar
           if-no-files-found: error
